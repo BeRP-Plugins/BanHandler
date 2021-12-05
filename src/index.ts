@@ -1,4 +1,5 @@
 import {
+  Player,
   PluginApi, 
 } from './@interface/pluginApi.i'
 import fs from 'fs'
@@ -11,14 +12,18 @@ import {
 import {
   Options,
   BanlistEntry,
-} from './@interface/BanHandler'
+  Config,
+} from './@interface/BanHandler.i'
 
 class BanHandler {
     private api: PluginApi
     private db: Database
+    private config: Config
+    private inv
 
     constructor(api: PluginApi) {
       this.api = api
+      this.config = JSON.parse(fs.readFileSync(path.resolve(this.api.path + "/config.json"), "utf-8"))
     }
 
     public onEnabled(): void {
@@ -47,11 +52,44 @@ class BanHandler {
         const data = await this.getUser({
           player,
         })
-        player.kick(`§r\n§7You have been banned from §l${this.api.getRealmManager().getName()}§r§7.\nYou can apply for an apeal on our Discord, our code: §l§9XXX-XXX§r§7.\n§7You Were Banned on§b ${data.date}§7, by §c${data.auth}§7.\n§7Ban Reason:§r §l§c${data.reason}`)
+        this._kickPlayer(player, data)
+      })
+      this.inv = setInterval(async () => {
+        for (const [, player] of this.api.getPlayerManager().getPlayerList()) {
+          const check = await this.userExist({
+            player,
+          })
+          if (!check) return
+          const data = await this.getUser({
+            player,
+          })
+          this._kickPlayer(player, data)
+        }
+      }, 5000)
+      this.api.createInterface({
+        interface: fs.readFileSync(path.resolve(this.api.path + "/src/@interface/BanHandler.i.ts"), "utf-8"),
+        name: "BanHandler",
+      })
+      this.api.getCommandManager().registerConsoleCommand({
+        command: "reload-bh",
+        aliases: ["rbh"],
+        usage: "reload-bh",
+        description: "Reload the BanHandler plugin.",
+      }, () => {
+        this.api.getLogger().success("Whitelist reloaded!")
+        this.config = JSON.parse(fs.readFileSync(path.resolve(this.api.path + "/config.json"), "utf-8"))
       })
     }
     public onDisabled(): void {
+      this.db.close((err) => {
+        if (err) return this.api.getLogger().error(err)
+      })
+      clearInterval(this.inv)
       this.api.getLogger().info('Disabled!')
+    }
+    private _kickPlayer(player: Player, data: BanlistEntry): void {
+      if (this.config.whitelist.includes(player.getName())) return
+      player.kick(`§r\n§7You have been banned from §l${this.api.getRealmManager().getName()}§r§7.\nYou can apply for an apeal on our Discord, our code: §l§9${this.config.discordCode}§r§7.\n§7You Were Banned on§b ${data.date}§7, by §c${data.auth}§7.\n§7Ban Reason:§r §l§c${data.reason}`)
     }
     private _dbCheck(): boolean {
       return fs.existsSync(path.resolve(this.api.path + "/banlist.db"))
@@ -65,6 +103,20 @@ class BanHandler {
           return res(false)
         } else {
           this.db.run(`INSERT INTO bans VALUES("${options.xuid || options.player.getXuid()}", "${reason}", "${(new Date().getMonth() + 1) + '/' + new Date().getDate() + '/' + new Date().getFullYear()}", "${auth}")`)
+
+          return res(true)
+        }
+      })
+    }
+    public async userRemove(options: Options): Promise<boolean> {
+      return new Promise(async (res) => {
+        const check = await this.userExist(options)
+        if (!check) {
+          this.api.getLogger().warn(`The player with the xuid of ${options.xuid || options.player.getXuid()} does not exist in the banlist.`)
+
+          return res(false)
+        } else {
+          this.db.run(`DELETE FROM ban WHERE name = "${options.xuid || options.player.getXuid()}"`)
 
           return res(true)
         }
@@ -89,6 +141,17 @@ class BanHandler {
         })
       })
     }
+    public async getAllUsers(): Promise<BanlistEntry[]> {
+      return new Promise((res) => {
+        this.db.all("SELECT * FROM bans", (err, rows) => {
+          if (err) return this.api.getLogger().error(err)
+  
+          return res(rows)
+        })
+      })
+    }
+    public getConfig(): Config { return this.config }
+    public getDatabase(): Database { return this.db }
 }
 
 export = BanHandler
